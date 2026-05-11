@@ -54,6 +54,7 @@ class ToolSpec:
     retry_delay_seconds: float = 0.0
     verify_tls: bool = True
     response_mode: str = "json"
+    protocol_mode: str = "strict"
 
     @property
     def endpoint(self) -> str | None:

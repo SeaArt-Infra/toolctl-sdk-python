@@ -6,16 +6,25 @@ import inspect
 import json
 from dataclasses import asdict
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 
 from sea_tools_server_sdk.errors import GatewayRegistrationError, ToolRegistrationError, ToolValidationError, UpstreamRequestError
 from sea_tools_server_sdk.gateway import build_gateway_registration_payload, register_tools_to_gateway
 from sea_tools_server_sdk.models import AuthConfig, GatewayRegistrationResult, ToolHandler, ToolSpec
 from sea_tools_server_sdk.openapi import find_openapi_operation, load_openapi_spec
+from sea_tools_server_sdk.protocol import (
+    completed,
+    ensure_tool_event,
+    failed,
+    is_tool_event,
+    normalize_json_result,
+    protocol_response_schema,
+)
 from sea_tools_server_sdk.proxy import call_upstream_tool, stream_upstream_tool
 
 
@@ -81,6 +90,7 @@ class ToolApp:
         timeout_ms: int = 30000,
         auth: AuthConfig | dict[str, Any] | None = None,
         response_mode: str = "json",
+        protocol_mode: str = "strict",
     ) -> ToolSpec:
         """Register a code-first tool."""
 
@@ -90,6 +100,8 @@ class ToolApp:
             raise ToolRegistrationError("Tool handler must be async or async-generator based.")
         if response_mode not in {"json", "sse"}:
             raise ToolRegistrationError("response_mode must be either 'json' or 'sse'.")
+        if protocol_mode not in {"strict", "passthrough"}:
+            raise ToolRegistrationError("protocol_mode must be either 'strict' or 'passthrough'.")
         spec = ToolSpec(
             name=name,
             description=description,
@@ -102,6 +114,7 @@ class ToolApp:
             timeout_ms=timeout_ms,
             auth=self._coerce_auth(auth),
             response_mode=response_mode,
+            protocol_mode=protocol_mode,
         )
         self._tools[name] = spec
         self._mount_tool_route(spec)
@@ -125,6 +138,7 @@ class ToolApp:
         retry_delay_seconds: float = 0.0,
         verify_tls: bool = True,
         response_mode: str = "json",
+        protocol_mode: str = "strict",
     ) -> ToolSpec:
         """Register a proxy tool backed by an upstream HTTP API."""
 
@@ -166,6 +180,7 @@ class ToolApp:
             timeout_ms=timeout_ms,
             auth=auth,
             response_mode=response_mode,
+            protocol_mode=protocol_mode,
         )
         spec.headers.update(headers or {})
         spec.upstream_base_url = base_url
@@ -195,6 +210,7 @@ class ToolApp:
         retry_count: int = 0,
         retry_delay_seconds: float = 0.0,
         response_mode: str = "json",
+        protocol_mode: str = "strict",
     ) -> ToolSpec:
         """Register a proxy tool from an OpenAPI operation."""
 
@@ -234,6 +250,7 @@ class ToolApp:
             retry_delay_seconds=retry_delay_seconds,
             verify_tls=verify_tls,
             response_mode=response_mode,
+            protocol_mode=protocol_mode,
         )
 
     def tool(
@@ -249,6 +266,7 @@ class ToolApp:
         timeout_ms: int = 30000,
         auth: AuthConfig | dict[str, Any] | None = None,
         response_mode: str = "json",
+        protocol_mode: str = "strict",
     ):
         """Decorator form of register_tool()."""
 
@@ -265,6 +283,7 @@ class ToolApp:
                 timeout_ms=timeout_ms,
                 auth=auth,
                 response_mode=response_mode,
+                protocol_mode=protocol_mode,
             )
             return handler
 
@@ -282,6 +301,7 @@ class ToolApp:
         tags: list[str] | None = None,
         timeout_ms: int = 30000,
         auth: AuthConfig | dict[str, Any] | None = None,
+        protocol_mode: str = "strict",
     ) -> ToolSpec:
         """Register a code-first SSE tool."""
 
@@ -296,6 +316,7 @@ class ToolApp:
             timeout_ms=timeout_ms,
             auth=auth,
             response_mode="sse",
+            protocol_mode=protocol_mode,
         )
 
     def sse_tool(
@@ -309,6 +330,7 @@ class ToolApp:
         tags: list[str] | None = None,
         timeout_ms: int = 30000,
         auth: AuthConfig | dict[str, Any] | None = None,
+        protocol_mode: str = "strict",
     ):
         """Decorator form of register_sse_tool()."""
 
@@ -323,6 +345,7 @@ class ToolApp:
                 tags=tags,
                 timeout_ms=timeout_ms,
                 auth=auth,
+                protocol_mode=protocol_mode,
             )
             return handler
 
@@ -413,6 +436,7 @@ class ToolApp:
 
     def _mount_tool_route(self, spec: ToolSpec) -> None:
         async def endpoint(request: Request) -> Any:
+            task_id = request.headers.get("x-tool-task-id") or request.headers.get("x-request-id") or f"task_{uuid4().hex}"
             payload = {}
             if spec.method == "GET":
                 payload = dict(request.query_params)
@@ -430,14 +454,45 @@ class ToolApp:
                     result = await result
                 if spec.response_mode == "sse":
                     return StreamingResponse(
-                        self._sse_event_stream(result),
+                        self._sse_event_stream(result, spec=spec, task_id=task_id),
                         media_type="text/event-stream",
                     )
-                return result
+                if spec.protocol_mode == "passthrough":
+                    return result
+                return JSONResponse(normalize_json_result(result, tool_name=spec.name, task_id=task_id))
             except ToolValidationError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                if spec.protocol_mode == "passthrough":
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                return JSONResponse(
+                    failed(
+                        tool_name=spec.name,
+                        task_id=task_id,
+                        code="INVALID_INPUT",
+                        message=str(exc),
+                    )
+                )
             except UpstreamRequestError as exc:
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
+                if spec.protocol_mode == "passthrough":
+                    raise HTTPException(status_code=502, detail=str(exc)) from exc
+                return JSONResponse(
+                    failed(
+                        tool_name=spec.name,
+                        task_id=task_id,
+                        code="UPSTREAM_REQUEST_FAILED",
+                        message=str(exc),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                if spec.protocol_mode == "passthrough":
+                    raise
+                return JSONResponse(
+                    failed(
+                        tool_name=spec.name,
+                        task_id=task_id,
+                        code="INTERNAL_ERROR",
+                        message=str(exc) or exc.__class__.__name__,
+                    )
+                )
 
         self.fastapi.add_api_route(
             spec.path,
@@ -473,7 +528,7 @@ class ToolApp:
                     }
                 },
             }
-            response_schema = spec.response_schema or {"type": "object"}
+            response_schema = spec.response_schema or protocol_response_schema()
             operation["responses"] = {
                 "200": {
                     "description": "Successful response",
@@ -497,26 +552,48 @@ class ToolApp:
         if missing:
             raise ToolValidationError(f"Missing required fields: {', '.join(missing)}")
 
-    async def _sse_event_stream(self, result: Any):
+    async def _sse_event_stream(self, result: Any, *, spec: ToolSpec, task_id: str):
+        saw_done = False
         if hasattr(result, "__aiter__"):
             async for item in result:
-                yield self._format_sse_event(item)
+                formatted = self._format_sse_event(item, spec=spec, task_id=task_id)
+                yield formatted
+                saw_done = saw_done or self._is_done_marker(formatted)
+            if not saw_done:
+                yield "data: [DONE]\n\n"
             return
         if isinstance(result, (list, tuple)):
             for item in result:
-                yield self._format_sse_event(item)
+                formatted = self._format_sse_event(item, spec=spec, task_id=task_id)
+                yield formatted
+                saw_done = saw_done or self._is_done_marker(formatted)
+            if not saw_done:
+                yield "data: [DONE]\n\n"
             return
-        yield self._format_sse_event(result)
+        formatted = self._format_sse_event(result, spec=spec, task_id=task_id)
+        yield formatted
+        if not self._is_done_marker(formatted):
+            yield "data: [DONE]\n\n"
 
     @staticmethod
-    def _format_sse_event(item: Any) -> str:
+    def _format_sse_event(item: Any, *, spec: ToolSpec, task_id: str) -> str:
         if isinstance(item, bytes):
             return item.decode("utf-8")
         if isinstance(item, str):
             if item.endswith("\n\n") or item.startswith("data:") or item.startswith("event:"):
                 return item
-            return f"data: {item}\n\n"
+            if spec.protocol_mode == "passthrough":
+                return f"data: {item}\n\n"
+            payload = completed(
+                tool_name=spec.name,
+                task_id=task_id,
+                outputs=[{"type": "text", "content": item}],
+            )
+            return f"event: {payload['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
         if isinstance(item, dict):
+            if spec.protocol_mode != "passthrough" and is_tool_event(item):
+                payload = ensure_tool_event(item, tool_name=spec.name, task_id=task_id)
+                return f"event: {payload['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
             if any(key in item for key in ("event", "id", "retry", "data")):
                 parts: list[str] = []
                 if "event" in item:
@@ -533,8 +610,18 @@ class ToolApp:
                 for line in data_value.splitlines() or [""]:
                     parts.append(f"data: {line}")
                 return "\n".join(parts) + "\n\n"
+            if spec.protocol_mode == "passthrough":
+                return f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            payload = normalize_json_result(item, tool_name=spec.name, task_id=task_id)
+            return f"event: {payload['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        if spec.protocol_mode == "passthrough":
             return f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-        return f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+        payload = normalize_json_result(item, tool_name=spec.name, task_id=task_id)
+        return f"event: {payload['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    @staticmethod
+    def _is_done_marker(payload: str) -> bool:
+        return payload.strip() == "data: [DONE]"
 
     @staticmethod
     def _coerce_auth(auth: AuthConfig | dict[str, Any] | None) -> AuthConfig:

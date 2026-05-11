@@ -8,6 +8,7 @@ Features:
 
 - `toolctl.start()` to create a tool app quickly
 - `create_app()` as a direct top-level constructor
+- protocol-first JSON and SSE responses
 - `register_tool()` for code-first tools
 - `register_sse_tool()` for code-first SSE tools
 - `register_proxy_tool()` for existing upstream HTTP APIs
@@ -64,9 +65,65 @@ curl -X POST "http://127.0.0.1:8080/tools/ping" \
   -d '{"message":"hello"}'
 ```
 
+Response:
+
+```json
+{
+  "type": "tool.completed",
+  "tool": {
+    "id": "task_xxx",
+    "name": "ping",
+    "status": "completed",
+    "outputs": [
+      {
+        "type": "text",
+        "content": "{\"ok\": true, \"payload\": {\"message\": \"hello\"}}"
+      }
+    ],
+    "metadata": {
+      "result": {
+        "ok": true,
+        "payload": {
+          "message": "hello"
+        }
+      }
+    }
+  }
+}
+```
+
+For richer output items, return `ToolResult`:
+
+```python
+from sea_tools_server_sdk import ToolResult, file_output
+
+
+@app.tool(
+    name="compose_video",
+    description="Compose a video.",
+    request_schema={"type": "object", "properties": {}},
+)
+async def compose_video(_payload: dict) -> ToolResult:
+    return ToolResult(
+        outputs=[
+            file_output(
+                "video",
+                "https://cdn.example.com/output.mp4",
+                content_type="video/mp4",
+                duration_ms=30000,
+            )
+        ],
+        usage={"duration_ms": 6358},
+        metadata={"provider": "ffmpeg"},
+    )
+```
+
 ## SSE tool
 
 ```python
+from sea_tools_server_sdk import completed, in_progress, text_output
+
+
 @app.sse_tool(
     name="stream_ping",
     description="Stream progress events.",
@@ -78,9 +135,37 @@ curl -X POST "http://127.0.0.1:8080/tools/ping" \
 )
 async def stream_ping(payload: dict):
     async def generator():
-        yield {"event": "message", "data": {"message": payload["message"]}}
-        yield {"event": "done", "data": "ok"}
+        yield in_progress(
+            tool_name="stream_ping",
+            task_id="task_stream_ping",
+            progress=50,
+            message=payload["message"],
+        )
+        yield completed(
+            tool_name="stream_ping",
+            task_id="task_stream_ping",
+            outputs=[text_output("ok")],
+        )
     return generator()
+```
+
+SSE streams are emitted with protocol events and end with `data: [DONE]`.
+
+## Compatibility mode
+
+Default behavior is `protocol_mode="strict"`.
+
+If you still need raw legacy JSON temporarily:
+
+```python
+@app.tool(
+    name="legacy_ping",
+    description="Legacy behavior",
+    request_schema={"type": "object", "properties": {}},
+    protocol_mode="passthrough",
+)
+async def legacy_ping(_payload: dict) -> dict:
+    return {"ok": True}
 ```
 
 ## Examples

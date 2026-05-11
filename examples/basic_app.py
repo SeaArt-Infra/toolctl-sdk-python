@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sea_tools_server_sdk import toolctl
+from sea_tools_server_sdk import ToolResult, text_output, toolctl
 
 
 app = toolctl.start(title="basic-tools", version="0.1.0")
@@ -20,8 +20,11 @@ app = toolctl.start(title="basic-tools", version="0.1.0")
     },
     tags=["demo"],
 )
-async def ping(payload: dict) -> dict:
-    return {"ok": True, "message": payload["message"]}
+async def ping(payload: dict) -> ToolResult:
+    return ToolResult(
+        outputs=[text_output(payload["message"])],
+        metadata={"echo": payload["message"]},
+    )
 
 
 if __name__ == "__main__":

@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from sea_tools_server_sdk import AuthConfig, GatewayRegistrationResult, UpstreamNetworkError, toolctl
+from sea_tools_server_sdk import (
+    AuthConfig,
+    GatewayRegistrationResult,
+    ToolResult,
+    UpstreamNetworkError,
+    completed,
+    file_output,
+    in_progress,
+    text_output,
+    toolctl,
+)
 
 
 class ToolAppTests(unittest.TestCase):
@@ -30,9 +39,14 @@ class ToolAppTests(unittest.TestCase):
         response = client.post("/tools/ping", json={"message": "hello"})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["echo"], "hello")
+        body = response.json()
+        self.assertEqual(body["type"], "tool.completed")
+        self.assertEqual(body["tool"]["status"], "completed")
+        self.assertEqual(body["tool"]["name"], "ping")
+        self.assertEqual(body["tool"]["outputs"][0]["type"], "text")
+        self.assertEqual(body["tool"]["metadata"]["result"]["echo"], "hello")
 
-    def test_missing_required_field_returns_400(self) -> None:
+    def test_missing_required_field_returns_protocol_failure(self) -> None:
         app = toolctl.start(title="test-tools", version="0.1.0")
 
         @app.tool(
@@ -50,8 +64,11 @@ class ToolAppTests(unittest.TestCase):
         client = TestClient(app.fastapi)
         response = client.post("/tools/ping", json={})
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("Missing required fields", response.json()["detail"])
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["type"], "tool.failed")
+        self.assertEqual(body["tool"]["error"]["code"], "INVALID_INPUT")
+        self.assertIn("Missing required fields", body["tool"]["error"]["message"])
 
     @patch("sea_tools_server_sdk.app.call_upstream_tool", new_callable=AsyncMock)
     def test_register_proxy_tool(self, mock_call_upstream: AsyncMock) -> None:
@@ -75,7 +92,9 @@ class ToolAppTests(unittest.TestCase):
         response = client.post("/tools/video_metadata", json={"video_url": "https://example.com/test.mp4"})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"success": True})
+        body = response.json()
+        self.assertEqual(body["type"], "tool.completed")
+        self.assertEqual(body["tool"]["metadata"]["result"]["success"], True)
         mock_call_upstream.assert_awaited_once()
         self.assertEqual(mock_call_upstream.await_args.kwargs["auth"].token, "token-1")
         self.assertEqual(mock_call_upstream.await_args.kwargs["retry_count"], 2)
@@ -94,8 +113,17 @@ class ToolAppTests(unittest.TestCase):
         )
         async def stream_ping(payload: dict):
             async def generator():
-                yield {"event": "message", "data": {"message": payload["message"], "step": 1}}
-                yield {"event": "done", "data": "ok"}
+                yield in_progress(
+                    tool_name="stream_ping",
+                    task_id="task_stream_ping",
+                    progress=50,
+                    message=payload["message"],
+                )
+                yield completed(
+                    tool_name="stream_ping",
+                    task_id="task_stream_ping",
+                    outputs=[text_output("ok")],
+                )
 
             return generator()
 
@@ -104,14 +132,16 @@ class ToolAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"].split(";")[0], "text/event-stream")
-        self.assertIn("event: message", response.text)
-        self.assertIn("\"message\": \"hello\"", response.text)
+        self.assertIn("event: tool.in_progress", response.text)
+        self.assertIn("event: tool.completed", response.text)
+        self.assertIn("data: [DONE]", response.text)
 
     @patch("sea_tools_server_sdk.app.stream_upstream_tool")
     def test_register_proxy_sse_tool(self, mock_stream_upstream_tool) -> None:
         async def fake_stream():
-            yield "event: message\ndata: hello\n\n"
-            yield "event: done\ndata: ok\n\n"
+            yield 'event: tool.in_progress\ndata: {"type":"tool.in_progress","tool":{"id":"task_1","name":"stream_video_status","status":"in_progress","progress":50}}\n\n'
+            yield 'event: tool.completed\ndata: {"type":"tool.completed","tool":{"id":"task_1","name":"stream_video_status","status":"completed","outputs":[{"type":"text","content":"ok"}]}}\n\n'
+            yield "data: [DONE]\n\n"
 
         mock_stream_upstream_tool.return_value = fake_stream()
         app = toolctl.start(title="proxy-sse-tools", version="0.1.0")
@@ -129,10 +159,11 @@ class ToolAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"].split(";")[0], "text/event-stream")
-        self.assertIn("event: message", response.text)
+        self.assertIn("event: tool.in_progress", response.text)
+        self.assertIn("event: tool.completed", response.text)
 
     @patch("sea_tools_server_sdk.app.call_upstream_tool", new_callable=AsyncMock)
-    def test_proxy_upstream_error_maps_to_502(self, mock_call_upstream: AsyncMock) -> None:
+    def test_proxy_upstream_error_maps_to_protocol_failure(self, mock_call_upstream: AsyncMock) -> None:
         mock_call_upstream.side_effect = UpstreamNetworkError("upstream down")
         app = toolctl.start(title="proxy-tools", version="0.1.0")
         app.register_proxy_tool(
@@ -146,8 +177,60 @@ class ToolAppTests(unittest.TestCase):
         client = TestClient(app.fastapi)
         response = client.post("/tools/video_metadata", json={})
 
-        self.assertEqual(response.status_code, 502)
-        self.assertIn("upstream down", response.json()["detail"])
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["type"], "tool.failed")
+        self.assertEqual(body["tool"]["error"]["code"], "UPSTREAM_REQUEST_FAILED")
+        self.assertIn("upstream down", body["tool"]["error"]["message"])
+
+    def test_register_tool_supports_explicit_protocol_result(self) -> None:
+        app = toolctl.start(title="protocol-tools", version="0.1.0")
+
+        @app.tool(
+            name="compose_video",
+            description="Compose video",
+            request_schema={"type": "object", "properties": {}},
+        )
+        async def compose_video(_payload: dict) -> ToolResult:
+            return ToolResult(
+                outputs=[
+                    file_output(
+                        "video",
+                        "https://cdn.example.com/output.mp4",
+                        content_type="video/mp4",
+                        duration_ms=30000,
+                    )
+                ],
+                usage={"duration_ms": 6358},
+                metadata={"provider": "ffmpeg"},
+            )
+
+        client = TestClient(app.fastapi)
+        response = client.post("/tools/compose_video", json={})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["type"], "tool.completed")
+        self.assertEqual(body["tool"]["outputs"][0]["type"], "video")
+        self.assertEqual(body["tool"]["usage"]["duration_ms"], 6358)
+
+    def test_register_tool_passthrough_mode_keeps_legacy_response(self) -> None:
+        app = toolctl.start(title="legacy-tools", version="0.1.0")
+
+        @app.tool(
+            name="legacy_ping",
+            description="Legacy ping",
+            request_schema={"type": "object", "properties": {}},
+            protocol_mode="passthrough",
+        )
+        async def legacy_ping(_payload: dict) -> dict:
+            return {"ok": True}
+
+        client = TestClient(app.fastapi)
+        response = client.post("/tools/legacy_ping", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
 
     def test_openapi_contains_registered_tool_schema(self) -> None:
         app = toolctl.start(title="openapi-tools", version="0.1.0")
@@ -172,6 +255,7 @@ class ToolAppTests(unittest.TestCase):
         route = body["paths"]["/tools/ping"]["post"]
         self.assertEqual(route["operationId"], "ping")
         self.assertEqual(route["requestBody"]["content"]["application/json"]["schema"]["required"], ["message"])
+        self.assertEqual(route["responses"]["200"]["content"]["application/json"]["schema"]["required"], ["type", "tool"])
 
     def test_export_gateway_payloads(self) -> None:
         app = toolctl.start(title="gateway-tools", version="0.1.0")
