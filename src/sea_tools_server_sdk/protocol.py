@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 
 TOOL_TERMINAL_EVENTS = frozenset({"tool.completed", "tool.failed", "tool.cancelled"})
 TOOL_EVENT_TYPES = TOOL_TERMINAL_EVENTS | frozenset({"tool.created", "tool.in_progress"})
+_TOOL_EVENT_STATUS = {
+    "tool.created": "pending",
+    "tool.in_progress": "in_progress",
+    "tool.completed": "completed",
+    "tool.failed": "failed",
+    "tool.cancelled": "cancelled",
+}
 
 
 @dataclass(slots=True)
@@ -48,9 +55,14 @@ def new_task_id() -> str:
 
 
 def text_output(content: str) -> dict[str, Any]:
-    """Create a text output item."""
+    """Create a plain-text file output item."""
 
-    return {"type": "text", "content": content}
+    return file_output(
+        "file",
+        f"data:text/plain;charset=utf-8,{quote(content)}",
+        content_type="text/plain",
+        filename="output.txt",
+    )
 
 
 def file_output(output_type: str, url: str, **kwargs: Any) -> dict[str, Any]:
@@ -59,14 +71,13 @@ def file_output(output_type: str, url: str, **kwargs: Any) -> dict[str, Any]:
     return _clean_dict({"type": output_type, "url": url, **kwargs})
 
 
-def created(*, tool_name: str, task_id: str, created_at: int | None = None, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def created(*, tool_name: str, task_id: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     """Create a tool.created event."""
 
     tool = {
         "id": task_id,
         "name": tool_name,
-        "status": "created",
-        "created_at": created_at or int(time.time()),
+        "status": "pending",
         "metadata": metadata,
     }
     return {"type": "tool.created", "tool": _clean_dict(tool)}
@@ -76,7 +87,7 @@ def in_progress(
     *,
     tool_name: str,
     task_id: str,
-    progress: int | None = None,
+    progress: int | float | None = None,
     message: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -121,6 +132,8 @@ def failed(
     code: str,
     message: str,
     details: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a tool.failed event."""
 
@@ -131,21 +144,23 @@ def failed(
             "name": tool_name,
             "status": "failed",
             "error": _clean_dict({"code": code, "message": message, "details": details}),
+            "metadata": metadata,
+            "usage": usage,
         },
     }
 
 
-def cancelled(*, tool_name: str, task_id: str, reason: str = "user_cancelled") -> dict[str, Any]:
+def cancelled(*, tool_name: str, task_id: str, reason: str | None = None) -> dict[str, Any]:
     """Create a tool.cancelled event."""
 
     return {
         "type": "tool.cancelled",
-        "tool": {
+        "tool": _clean_dict({
             "id": task_id,
             "name": tool_name,
             "status": "cancelled",
             "reason": reason,
-        },
+        }),
     }
 
 
@@ -158,10 +173,13 @@ def is_tool_event(payload: Any) -> bool:
 def ensure_tool_event(payload: dict[str, Any], *, tool_name: str, task_id: str) -> dict[str, Any]:
     """Fill missing protocol fields on an event."""
 
+    event_type = payload["type"]
     tool = dict(payload.get("tool") or {})
     tool.setdefault("id", task_id)
     tool.setdefault("name", tool_name)
-    tool.setdefault("status", payload["type"].split(".", 1)[1])
+    tool["status"] = _TOOL_EVENT_STATUS.get(event_type, tool.get("status"))
+    if event_type == "tool.completed":
+        tool["outputs"] = [_normalize_output(output) for output in tool.get("outputs") or []]
     return {**payload, "tool": tool}
 
 
@@ -181,7 +199,7 @@ def normalize_json_result(result: Any, *, tool_name: str, task_id: str) -> dict[
         )
 
     if isinstance(result, str):
-        return completed(tool_name=tool_name, task_id=task_id, outputs=[text_output(result)])
+        return completed(tool_name=tool_name, task_id=task_id, outputs=[], metadata={"result": result})
 
     if isinstance(result, dict):
         if "outputs" in result:
@@ -199,7 +217,7 @@ def normalize_json_result(result: Any, *, tool_name: str, task_id: str) -> dict[
         return completed(
             tool_name=tool_name,
             task_id=task_id,
-            outputs=[text_output(json.dumps(result, ensure_ascii=False))],
+            outputs=[],
             metadata={"result": result},
         )
 
@@ -208,14 +226,14 @@ def normalize_json_result(result: Any, *, tool_name: str, task_id: str) -> dict[
         return completed(
             tool_name=tool_name,
             task_id=task_id,
-            outputs=[text_output(json.dumps(payload, ensure_ascii=False))],
+            outputs=[],
             metadata={"result": payload},
         )
 
     return completed(
         tool_name=tool_name,
         task_id=task_id,
-        outputs=[text_output(json.dumps(result, ensure_ascii=False))],
+        outputs=[],
         metadata={"result": result},
     )
 
@@ -235,10 +253,8 @@ def protocol_response_schema() -> dict[str, Any]:
                     "id": {"type": "string"},
                     "name": {"type": "string"},
                     "status": {"type": "string"},
-                    "created_at": {"type": "integer"},
-                    "progress": {"type": "integer"},
+                    "progress": {"type": "number"},
                     "message": {"type": "string"},
-                    "reason": {"type": "string"},
                     "outputs": {"type": "array", "items": {"type": "object"}},
                     "usage": {"type": "object"},
                     "metadata": {"type": "object"},
@@ -251,11 +267,22 @@ def protocol_response_schema() -> dict[str, Any]:
 
 def _normalize_output(output: ToolOutput | dict[str, Any]) -> dict[str, Any]:
     if isinstance(output, ToolOutput):
-        return _clean_dict(asdict(output))
+        output = asdict(output)
     if is_dataclass(output):
-        return _clean_dict(asdict(output))
+        output = asdict(output)
     if isinstance(output, dict):
-        return _clean_dict(output)
+        normalized = dict(output)
+        if normalized.get("type") == "text":
+            content = normalized.pop("content", "")
+            normalized.pop("type", None)
+            return file_output(
+                "file",
+                f"data:text/plain;charset=utf-8,{quote(content)}",
+                content_type=normalized.pop("content_type", None) or "text/plain",
+                filename=normalized.pop("filename", None) or "output.txt",
+                **normalized,
+            )
+        return _clean_dict(normalized)
     raise TypeError(f"Unsupported output type: {type(output)!r}")
 
 

@@ -74,12 +74,7 @@ Response:
     "id": "task_xxx",
     "name": "ping",
     "status": "completed",
-    "outputs": [
-      {
-        "type": "text",
-        "content": "{\"ok\": true, \"payload\": {\"message\": \"hello\"}}"
-      }
-    ],
+    "outputs": [],
     "metadata": {
       "result": {
         "ok": true,
@@ -121,7 +116,7 @@ async def compose_video(_payload: dict) -> ToolResult:
 ## SSE tool
 
 ```python
-from sea_tools_server_sdk import completed, in_progress, text_output
+from sea_tools_server_sdk import completed, in_progress
 
 
 @app.sse_tool(
@@ -144,7 +139,8 @@ async def stream_ping(payload: dict):
         yield completed(
             tool_name="stream_ping",
             task_id="task_stream_ping",
-            outputs=[text_output("ok")],
+            outputs=[],
+            metadata={"result": "ok"},
         )
     return generator()
 ```

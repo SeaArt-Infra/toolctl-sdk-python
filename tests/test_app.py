@@ -13,7 +13,6 @@ from sea_tools_server_sdk import (
     completed,
     file_output,
     in_progress,
-    text_output,
     toolctl,
 )
 
@@ -43,7 +42,7 @@ class ToolAppTests(unittest.TestCase):
         self.assertEqual(body["type"], "tool.completed")
         self.assertEqual(body["tool"]["status"], "completed")
         self.assertEqual(body["tool"]["name"], "ping")
-        self.assertEqual(body["tool"]["outputs"][0]["type"], "text")
+        self.assertEqual(body["tool"]["outputs"], [])
         self.assertEqual(body["tool"]["metadata"]["result"]["echo"], "hello")
 
     def test_missing_required_field_returns_protocol_failure(self) -> None:
@@ -122,7 +121,8 @@ class ToolAppTests(unittest.TestCase):
                 yield completed(
                     tool_name="stream_ping",
                     task_id="task_stream_ping",
-                    outputs=[text_output("ok")],
+                    outputs=[],
+                    metadata={"result": "ok"},
                 )
 
             return generator()
@@ -132,15 +132,16 @@ class ToolAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"].split(";")[0], "text/event-stream")
-        self.assertIn("event: tool.in_progress", response.text)
-        self.assertIn("event: tool.completed", response.text)
+        self.assertIn('"type": "tool.created"', response.text)
+        self.assertIn('"type": "tool.in_progress"', response.text)
+        self.assertIn('"type": "tool.completed"', response.text)
         self.assertIn("data: [DONE]", response.text)
 
     @patch("sea_tools_server_sdk.app.stream_upstream_tool")
     def test_register_proxy_sse_tool(self, mock_stream_upstream_tool) -> None:
         async def fake_stream():
             yield 'event: tool.in_progress\ndata: {"type":"tool.in_progress","tool":{"id":"task_1","name":"stream_video_status","status":"in_progress","progress":50}}\n\n'
-            yield 'event: tool.completed\ndata: {"type":"tool.completed","tool":{"id":"task_1","name":"stream_video_status","status":"completed","outputs":[{"type":"text","content":"ok"}]}}\n\n'
+            yield 'event: tool.completed\ndata: {"type":"tool.completed","tool":{"id":"task_1","name":"stream_video_status","status":"completed","outputs":[],"metadata":{"result":"ok"}}}\n\n'
             yield "data: [DONE]\n\n"
 
         mock_stream_upstream_tool.return_value = fake_stream()
@@ -159,6 +160,7 @@ class ToolAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"].split(";")[0], "text/event-stream")
+        self.assertIn('"type": "tool.created"', response.text)
         self.assertIn("event: tool.in_progress", response.text)
         self.assertIn("event: tool.completed", response.text)
 

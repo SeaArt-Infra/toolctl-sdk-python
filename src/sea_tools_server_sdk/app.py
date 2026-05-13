@@ -18,7 +18,7 @@ from sea_tools_server_sdk.gateway import build_gateway_registration_payload, reg
 from sea_tools_server_sdk.models import AuthConfig, GatewayRegistrationResult, ToolHandler, ToolSpec
 from sea_tools_server_sdk.openapi import find_openapi_operation, load_openapi_spec
 from sea_tools_server_sdk.protocol import (
-    completed,
+    created,
     ensure_tool_event,
     failed,
     is_tool_event,
@@ -554,6 +554,8 @@ class ToolApp:
 
     async def _sse_event_stream(self, result: Any, *, spec: ToolSpec, task_id: str):
         saw_done = False
+        if spec.protocol_mode != "passthrough":
+            yield self._serialize_tool_sse_event(created(tool_name=spec.name, task_id=task_id))
         if hasattr(result, "__aiter__"):
             async for item in result:
                 formatted = self._format_sse_event(item, spec=spec, task_id=task_id)
@@ -584,16 +586,12 @@ class ToolApp:
                 return item
             if spec.protocol_mode == "passthrough":
                 return f"data: {item}\n\n"
-            payload = completed(
-                tool_name=spec.name,
-                task_id=task_id,
-                outputs=[{"type": "text", "content": item}],
-            )
-            return f"event: {payload['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            payload = normalize_json_result(item, tool_name=spec.name, task_id=task_id)
+            return ToolApp._serialize_tool_sse_event(payload)
         if isinstance(item, dict):
             if spec.protocol_mode != "passthrough" and is_tool_event(item):
                 payload = ensure_tool_event(item, tool_name=spec.name, task_id=task_id)
-                return f"event: {payload['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                return ToolApp._serialize_tool_sse_event(payload)
             if any(key in item for key in ("event", "id", "retry", "data")):
                 parts: list[str] = []
                 if "event" in item:
@@ -613,11 +611,15 @@ class ToolApp:
             if spec.protocol_mode == "passthrough":
                 return f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             payload = normalize_json_result(item, tool_name=spec.name, task_id=task_id)
-            return f"event: {payload['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            return ToolApp._serialize_tool_sse_event(payload)
         if spec.protocol_mode == "passthrough":
             return f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
         payload = normalize_json_result(item, tool_name=spec.name, task_id=task_id)
-        return f"event: {payload['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        return ToolApp._serialize_tool_sse_event(payload)
+
+    @staticmethod
+    def _serialize_tool_sse_event(payload: dict[str, Any]) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     @staticmethod
     def _is_done_marker(payload: str) -> bool:
