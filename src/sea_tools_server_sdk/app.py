@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import threading
 from dataclasses import asdict
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,14 @@ import uvicorn
 from sea_tools_server_sdk.errors import GatewayRegistrationError, ToolRegistrationError, ToolValidationError, UpstreamRequestError
 from sea_tools_server_sdk.gateway import build_gateway_registration_payload, register_tools_to_gateway
 from sea_tools_server_sdk.models import AuthConfig, GatewayRegistrationResult, ToolHandler, ToolSpec
+from sea_tools_server_sdk.monitoring import (
+    MACHINE_STATUS_BUSY,
+    MACHINE_STATUS_IDLE,
+    MetricsPublisher,
+    MonitoringConfig,
+    PublishFn,
+    ResourceMonitor,
+)
 from sea_tools_server_sdk.openapi import find_openapi_operation, load_openapi_spec
 from sea_tools_server_sdk.protocol import (
     created,
@@ -54,6 +63,9 @@ class ToolApp:
             openapi_url=openapi_url,
         )
         self.fastapi.openapi = self._build_openapi
+        self._resource_monitor: ResourceMonitor | None = None
+        self._active_tool_requests = 0
+        self._active_tool_requests_lock = threading.Lock()
         self._install_base_routes()
 
     def _install_base_routes(self) -> None:
@@ -434,6 +446,43 @@ class ToolApp:
             retry_delay_seconds=retry_delay_seconds,
         )
 
+    def enable_resource_monitoring(
+        self,
+        *,
+        publisher: MetricsPublisher | None = None,
+        publish: PublishFn | None = None,
+        interval_seconds: float = 5.0,
+        instance_id: str | None = None,
+        labels: dict[str, str] | None = None,
+        publish_immediately: bool = False,
+    ) -> ResourceMonitor:
+        """Attach resource monitoring to the FastAPI app lifespan."""
+
+        monitor_labels = dict(labels or {})
+        monitor = ResourceMonitor(
+            config=MonitoringConfig(
+                service_name=self.title,
+                interval_seconds=interval_seconds,
+                instance_id=instance_id or f"{self.title}-{uuid4().hex}",
+                labels=monitor_labels,
+                publish_immediately=publish_immediately,
+                status_provider=lambda: self._resource_monitor_status(monitor_labels),
+            ),
+            publisher=publisher,
+            publish=publish,
+        )
+        self._resource_monitor = monitor
+
+        @self.fastapi.on_event("startup")
+        async def _start_resource_monitor() -> None:
+            monitor.start()
+
+        @self.fastapi.on_event("shutdown")
+        async def _stop_resource_monitor() -> None:
+            monitor.stop()
+
+        return monitor
+
     def _mount_tool_route(self, spec: ToolSpec) -> None:
         async def endpoint(request: Request) -> Any:
             task_id = request.headers.get("x-tool-task-id") or request.headers.get("x-request-id") or f"task_{uuid4().hex}"
@@ -447,14 +496,19 @@ class ToolApp:
                     raise HTTPException(status_code=400, detail="Invalid JSON request body.") from None
             if not isinstance(payload, dict):
                 raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+            streaming = False
+            request_tracked = False
             try:
                 self._validate_payload(spec.request_schema, payload)
+                self._begin_tool_request()
+                request_tracked = True
                 result = spec.handler(payload)
                 if inspect.isawaitable(result):
                     result = await result
                 if spec.response_mode == "sse":
+                    streaming = True
                     return StreamingResponse(
-                        self._sse_event_stream(result, spec=spec, task_id=task_id),
+                        self._tracked_sse_event_stream(result, spec=spec, task_id=task_id),
                         media_type="text/event-stream",
                     )
                 if spec.protocol_mode == "passthrough":
@@ -493,6 +547,9 @@ class ToolApp:
                         message=str(exc) or exc.__class__.__name__,
                     )
                 )
+            finally:
+                if request_tracked and not streaming:
+                    self._end_tool_request()
 
         self.fastapi.add_api_route(
             spec.path,
@@ -576,6 +633,32 @@ class ToolApp:
         yield formatted
         if not self._is_done_marker(formatted):
             yield "data: [DONE]\n\n"
+
+    async def _tracked_sse_event_stream(self, result: Any, *, spec: ToolSpec, task_id: str):
+        try:
+            async for event in self._sse_event_stream(result, spec=spec, task_id=task_id):
+                yield event
+        finally:
+            self._end_tool_request()
+
+    def _begin_tool_request(self) -> None:
+        with self._active_tool_requests_lock:
+            self._active_tool_requests += 1
+
+    def _end_tool_request(self) -> None:
+        with self._active_tool_requests_lock:
+            self._active_tool_requests = max(0, self._active_tool_requests - 1)
+
+    def _resource_monitor_status(self, labels: dict[str, str]) -> int:
+        raw_status = labels.get("status")
+        try:
+            status = int(raw_status) if raw_status not in {None, ""} else MACHINE_STATUS_IDLE
+        except (TypeError, ValueError):
+            status = MACHINE_STATUS_IDLE
+        if status != MACHINE_STATUS_IDLE:
+            return status
+        with self._active_tool_requests_lock:
+            return MACHINE_STATUS_BUSY if self._active_tool_requests > 0 else MACHINE_STATUS_IDLE
 
     @staticmethod
     def _format_sse_event(item: Any, *, spec: ToolSpec, task_id: str) -> str:

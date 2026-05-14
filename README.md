@@ -181,3 +181,29 @@ results = app.register_to_gateway(
     verify_tls=False,
 )
 ```
+
+## Resource monitoring
+
+`toolctl-sdk` includes resource monitoring for tool services. The SDK publishes comfy-agent style heartbeats with the same top-level scheduling fields (`id`, `ip`, `routes`, `send_time`, `machine_id`, `status`, `category`, `task_url`, `instance_group`, `express`, `task_express_url`, `cloud`, `host_id`, `partition`). CPU, memory, process RSS, process CPU, uptime, load average, and host metadata are appended to that payload. The default interval is 5 seconds.
+
+The SDK does not own topics or messaging configuration. Tools can pass their own publisher, or use the SDK Pub/Sub publisher with config values loaded by the tool:
+
+```python
+from sea_tools_server_sdk import PubSubMetricsPublisher, start_resource_monitor
+
+publisher = PubSubMetricsPublisher(
+    topic="projects/PROJECT_ID/topics/TOPIC_NAME",
+    credentials_file="./configs/service-account.json",
+)
+
+monitor = start_resource_monitor(
+    service_name="web-tool",
+    publisher=publisher,
+    interval_seconds=5,
+    labels={"tool": "web-tool", "port": "8080", "api": "tools"},
+)
+```
+
+`PubSubMetricsPublisher` accepts full Pub/Sub topic paths. If a tool passes a short topic name instead, it must also pass `project_id`.
+
+For `ToolApp` instances, `enable_resource_monitoring(...)` attaches start/stop to the FastAPI lifecycle.

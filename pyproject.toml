@@ -11,12 +11,16 @@ requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.121.0",
     "httpx>=0.28.0,<1.0.0",
+    "psutil>=5.9.0",
     "uvicorn>=0.38.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
+]
+pubsub = [
+    "google-cloud-pubsub>=2.19.0",
 ]
 
 [tool.setuptools]
