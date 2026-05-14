@@ -128,7 +128,7 @@
 | `total_tokens` | integer | 否 | 总 token 数 |
 | `used` | integer | 否 | 消耗积分数 |
 
-> `usage` 中不需要的字段可以省略，不要求全部填写。
+> 如果未提供 `usage.cost`，SDK 会默认补为 `0`。其他不需要的字段可以省略，不要求全部填写。
 
 ---
 

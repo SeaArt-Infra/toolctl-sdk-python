@@ -119,7 +119,7 @@ def completed(
         "name": tool_name,
         "status": "completed",
         "outputs": [_normalize_output(output) for output in outputs or []],
-        "usage": usage,
+        "usage": _normalize_usage(usage),
         "metadata": metadata,
     }
     return {"type": "tool.completed", "tool": _clean_dict(tool)}
@@ -145,7 +145,7 @@ def failed(
             "status": "failed",
             "error": _clean_dict({"code": code, "message": message, "details": details}),
             "metadata": metadata,
-            "usage": usage,
+            "usage": _normalize_usage(usage),
         },
     }
 
@@ -180,6 +180,9 @@ def ensure_tool_event(payload: dict[str, Any], *, tool_name: str, task_id: str) 
     tool["status"] = _TOOL_EVENT_STATUS.get(event_type, tool.get("status"))
     if event_type == "tool.completed":
         tool["outputs"] = [_normalize_output(output) for output in tool.get("outputs") or []]
+        tool["usage"] = _normalize_usage(tool.get("usage"))
+    if event_type == "tool.failed":
+        tool["usage"] = _normalize_usage(tool.get("usage"))
     return {**payload, "tool": tool}
 
 
@@ -284,6 +287,12 @@ def _normalize_output(output: ToolOutput | dict[str, Any]) -> dict[str, Any]:
             )
         return _clean_dict(normalized)
     raise TypeError(f"Unsupported output type: {type(output)!r}")
+
+
+def _normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(usage or {})
+    normalized.setdefault("cost", 0)
+    return normalized
 
 
 def _clean_dict(payload: dict[str, Any]) -> dict[str, Any]:

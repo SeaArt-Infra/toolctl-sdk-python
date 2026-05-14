@@ -215,6 +215,56 @@ class ToolAppTests(unittest.TestCase):
         self.assertEqual(body["type"], "tool.completed")
         self.assertEqual(body["tool"]["outputs"][0]["type"], "video")
         self.assertEqual(body["tool"]["usage"]["duration_ms"], 6358)
+        self.assertEqual(body["tool"]["usage"]["cost"], 0)
+
+    def test_register_tool_defaults_cost_to_zero_when_usage_missing(self) -> None:
+        app = toolctl.start(title="default-cost-tools", version="0.1.0")
+
+        @app.tool(
+            name="ping",
+            description="Ping",
+            request_schema={"type": "object", "properties": {}},
+        )
+        async def ping(_payload: dict) -> dict:
+            return {"ok": True}
+
+        client = TestClient(app.fastapi)
+        response = client.post("/tools/ping", json={})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["type"], "tool.completed")
+        self.assertEqual(body["tool"]["usage"]["cost"], 0)
+
+    def test_register_tool_defaults_cost_to_zero_for_explicit_protocol_event(self) -> None:
+        app = toolctl.start(title="default-cost-event-tools", version="0.1.0")
+
+        @app.tool(
+            name="compose_video",
+            description="Compose video",
+            request_schema={"type": "object", "properties": {}},
+        )
+        async def compose_video(_payload: dict) -> dict:
+            return {
+                "type": "tool.completed",
+                "tool": {
+                    "outputs": [
+                        file_output(
+                            "video",
+                            "https://cdn.example.com/output.mp4",
+                            content_type="video/mp4",
+                        )
+                    ]
+                },
+            }
+
+        client = TestClient(app.fastapi)
+        response = client.post("/tools/compose_video", json={})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["type"], "tool.completed")
+        self.assertEqual(body["tool"]["usage"]["cost"], 0)
 
     def test_register_tool_passthrough_mode_keeps_legacy_response(self) -> None:
         app = toolctl.start(title="legacy-tools", version="0.1.0")

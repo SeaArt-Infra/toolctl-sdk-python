@@ -113,6 +113,8 @@ async def compose_video(_payload: dict) -> ToolResult:
     )
 ```
 
+If `usage.cost` is omitted, the SDK defaults it to `0`.
+
 ## SSE tool
 
 ```python
