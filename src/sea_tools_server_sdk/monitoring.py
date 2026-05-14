@@ -60,6 +60,7 @@ class MonitoringConfig:
     labels: dict[str, str] = field(default_factory=dict)
     publish_immediately: bool = False
     status_provider: StatusProvider | None = None
+    enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -417,7 +418,7 @@ class ResourceMonitor:
         publish: PublishFn | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        if publisher is None and publish is None:
+        if config.enabled and publisher is None and publish is None:
             raise ValueError("Either publisher or publish must be provided.")
         if config.interval_seconds <= 0:
             raise ValueError("interval_seconds must be greater than zero.")
@@ -441,9 +442,17 @@ class ResourceMonitor:
 
         return self._thread is not None and self._thread.is_alive()
 
+    @property
+    def enabled(self) -> bool:
+        """Return whether metrics publishing is enabled."""
+
+        return self.config.enabled
+
     def start(self) -> None:
         """Start the background monitoring thread."""
 
+        if not self.enabled:
+            return
         if self.running:
             return
         self._stop_event.clear()
@@ -471,7 +480,8 @@ class ResourceMonitor:
         """Collect and publish one metrics payload."""
 
         payload = self.collect_once()
-        self._publish_payload(payload)
+        if self.enabled:
+            self._publish_payload(payload)
         return payload
 
     def _run(self) -> None:
@@ -494,6 +504,8 @@ class ResourceMonitor:
                 asyncio.run(result)
             return
 
+        if self._publisher is None:
+            return
         assert self._publisher is not None
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         attributes = {
@@ -511,6 +523,7 @@ def start_resource_monitor(
     service_name: str,
     publisher: MetricsPublisher | None = None,
     publish: PublishFn | None = None,
+    enabled: bool = True,
     interval_seconds: float = 5.0,
     instance_id: str | None = None,
     labels: dict[str, str] | None = None,
@@ -523,6 +536,7 @@ def start_resource_monitor(
     monitor = ResourceMonitor(
         config=MonitoringConfig(
             service_name=service_name,
+            enabled=enabled,
             interval_seconds=interval_seconds,
             instance_id=instance_id or uuid4().hex,
             labels=dict(labels or {}),

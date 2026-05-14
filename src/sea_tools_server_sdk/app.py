@@ -451,6 +451,7 @@ class ToolApp:
         *,
         publisher: MetricsPublisher | None = None,
         publish: PublishFn | None = None,
+        enabled: bool = True,
         interval_seconds: float = 5.0,
         instance_id: str | None = None,
         labels: dict[str, str] | None = None,
@@ -462,6 +463,7 @@ class ToolApp:
         monitor = ResourceMonitor(
             config=MonitoringConfig(
                 service_name=self.title,
+                enabled=enabled,
                 interval_seconds=interval_seconds,
                 instance_id=instance_id or f"{self.title}-{uuid4().hex}",
                 labels=monitor_labels,
@@ -500,15 +502,19 @@ class ToolApp:
             request_tracked = False
             try:
                 self._validate_payload(spec.request_schema, payload)
-                self._begin_tool_request()
-                request_tracked = True
+                request_tracked = self._begin_tool_request()
                 result = spec.handler(payload)
                 if inspect.isawaitable(result):
                     result = await result
                 if spec.response_mode == "sse":
                     streaming = True
+                    event_stream = (
+                        self._tracked_sse_event_stream(result, spec=spec, task_id=task_id)
+                        if request_tracked
+                        else self._sse_event_stream(result, spec=spec, task_id=task_id)
+                    )
                     return StreamingResponse(
-                        self._tracked_sse_event_stream(result, spec=spec, task_id=task_id),
+                        event_stream,
                         media_type="text/event-stream",
                     )
                 if spec.protocol_mode == "passthrough":
@@ -641,9 +647,12 @@ class ToolApp:
         finally:
             self._end_tool_request()
 
-    def _begin_tool_request(self) -> None:
+    def _begin_tool_request(self) -> bool:
+        if self._resource_monitor is None or not self._resource_monitor.enabled:
+            return False
         with self._active_tool_requests_lock:
             self._active_tool_requests += 1
+        return True
 
     def _end_tool_request(self) -> None:
         with self._active_tool_requests_lock:

@@ -199,10 +199,13 @@ publisher = PubSubMetricsPublisher(
 monitor = start_resource_monitor(
     service_name="web-tool",
     publisher=publisher,
+    enabled=True,
     interval_seconds=5,
     labels={"tool": "web-tool", "port": "8080", "api": "tools"},
 )
 ```
+
+Set `enabled=False` to keep resource monitoring configured but inactive. Disabled monitors do not start the heartbeat thread, publish metrics, or require a publisher.
 
 `PubSubMetricsPublisher` accepts full Pub/Sub topic paths. If a tool passes a short topic name instead, it must also pass `project_id`.
 

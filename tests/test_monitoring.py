@@ -99,6 +99,22 @@ class ResourceMonitoringTests(unittest.TestCase):
         self.assertEqual(attributes["event_type"], "machine_status")
         self.assertEqual(attributes["service"], "test-tool")
 
+    def test_resource_monitor_can_be_disabled_without_publisher(self) -> None:
+        monitor = ResourceMonitor(
+            config=MonitoringConfig(
+                service_name="disabled-tool",
+                enabled=False,
+                publish_immediately=True,
+            ),
+        )
+
+        monitor.start()
+        payload = monitor.publish_once()
+        monitor.stop()
+
+        self.assertFalse(monitor.running)
+        self.assertEqual(payload["category"], "disabled-tool")
+
     def test_pubsub_metrics_publisher_accepts_full_topic_path(self) -> None:
         class FakeClient:
             def topic_path(self, project_id: str, topic: str) -> str:
@@ -168,6 +184,24 @@ class ResourceMonitoringTests(unittest.TestCase):
         self.assertEqual(payloads[0]["category"], "lifecycle-tool")
         self.assertIn("cpu", payloads[0])
 
+    def test_tool_app_resource_monitoring_can_be_disabled(self) -> None:
+        payloads: list[dict] = []
+        app = toolctl.start(title="disabled-lifecycle-tool")
+        monitor = app.enable_resource_monitoring(
+            publish=payloads.append,
+            enabled=False,
+            interval_seconds=0.01,
+            publish_immediately=True,
+        )
+
+        with TestClient(app.fastapi) as client:
+            response = client.get("/health")
+            time.sleep(0.03)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(monitor.running)
+        self.assertEqual(payloads, [])
+
     def test_tool_app_resource_monitor_status_tracks_active_request(self) -> None:
         app = toolctl.start(title="status-tool")
         monitor = app.enable_resource_monitoring(publish=lambda _payload: None)
@@ -178,3 +212,10 @@ class ResourceMonitoringTests(unittest.TestCase):
             self.assertEqual(monitor.collect_once()["status"], 1)
         finally:
             app._end_tool_request()
+
+    def test_tool_app_does_not_track_requests_when_monitoring_disabled(self) -> None:
+        app = toolctl.start(title="disabled-status-tool")
+        monitor = app.enable_resource_monitoring(publish=lambda _payload: None, enabled=False)
+
+        self.assertFalse(app._begin_tool_request())
+        self.assertEqual(monitor.collect_once()["status"], 0)
