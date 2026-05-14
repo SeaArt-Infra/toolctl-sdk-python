@@ -168,6 +168,8 @@ async def legacy_ping(_payload: dict) -> dict:
 
 - `examples/basic_app.py`
 - `examples/proxy_app.py`
+- `docs/quick-tool-integration.md`
+- `docs/tool-response-protocol.md`
 
 ## Register to gateway
 
