@@ -202,9 +202,7 @@ class SystemMetricsCollector:
             default=self._route_url(ip, port, mode_api),
         )
         cpu_percent = self._system_cpu_percent()
-        process_cpu_percent = self._process_cpu_percent(now)
         memory = self._memory_metrics()
-        process_memory = self._process_rss_bytes()
         payload: dict[str, Any] = {
             "id": machine_id,
             "ip": ip,
@@ -225,30 +223,11 @@ class SystemMetricsCollector:
             "cloud": self._label("cloud"),
             "host_id": self._label("host_id"),
             "partition": self._label("partition"),
-            "cpu": {
-                "percent": cpu_percent,
-                "load_avg": self._load_average(),
-                "count": os.cpu_count(),
-            },
-            "memory": memory,
-            "process": {
-                "pid": os.getpid(),
-                "cpu_percent": process_cpu_percent,
-                "rss_bytes": process_memory,
-                "uptime_seconds": max(0.0, now - self._started_at),
-                "thread_count": threading.active_count(),
-            },
+            "cpu_percent": cpu_percent,
+            "memory_percent": memory.get("used_percent") if memory else None,
             "instance_id": self.instance_id,
-            "platform": {
-                "system": platform.system(),
-                "release": platform.release(),
-                "machine": platform.machine(),
-                "python_version": platform.python_version(),
-            },
             "hostname": socket.gethostname(),
         }
-        if self.labels:
-            payload["labels"] = self.labels
         return payload
 
     def _label(self, *keys: str, default: str = "") -> str:
