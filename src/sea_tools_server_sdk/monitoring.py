@@ -80,6 +80,7 @@ class PubSubMetricsPublisher:
         *,
         topic: str,
         credentials_file: str | None = None,
+        credentials_json: str | None = None,
         project_id: str | None = None,
         publish_timeout_seconds: float | None = 30.0,
         client: Any | None = None,
@@ -89,13 +90,17 @@ class PubSubMetricsPublisher:
 
         self.topic = topic
         self.credentials_file = credentials_file
+        self.credentials_json = credentials_json
         self.project_id = project_id
         self.publish_timeout_seconds = publish_timeout_seconds
-        self._publisher = client or self._create_publisher_client(credentials_file)
+        self._publisher = client or self._create_publisher_client(credentials_file, credentials_json)
         self._topic_path = self._resolve_topic_path(self._publisher, topic, project_id)
 
     @staticmethod
-    def _create_publisher_client(credentials_file: str | None) -> Any:
+    def _create_publisher_client(
+        credentials_file: str | None,
+        credentials_json: str | None = None,
+    ) -> Any:
         try:
             from google.cloud import pubsub_v1
         except ImportError as exc:  # pragma: no cover - depends on optional runtime extra
@@ -103,6 +108,17 @@ class PubSubMetricsPublisher:
                 "google-cloud-pubsub is required for PubSubMetricsPublisher."
             ) from exc
 
+        if credentials_json:
+            import base64
+            import json as _json
+            from google.oauth2 import service_account
+
+            payload = credentials_json.strip()
+            if not payload.startswith("{"):
+                payload = base64.b64decode(payload).decode()
+            info = _json.loads(payload)
+            credentials = service_account.Credentials.from_service_account_info(info)
+            return pubsub_v1.PublisherClient(credentials=credentials)
         if credentials_file:
             from google.oauth2 import service_account
 
@@ -481,6 +497,7 @@ class ResourceMonitor:
 
         payload = self.collect_once()
         if self.enabled:
+            self._logger.info("resource monitor heartbeat payload=%s", payload)
             self._publish_payload(payload)
         return payload
 

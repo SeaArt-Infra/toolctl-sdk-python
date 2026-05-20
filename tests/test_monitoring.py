@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import unittest
+import unittest.mock
 
 from fastapi.testclient import TestClient
 
@@ -99,6 +101,21 @@ class ResourceMonitoringTests(unittest.TestCase):
         self.assertEqual(attributes["event_type"], "machine_status")
         self.assertEqual(attributes["service"], "test-tool")
 
+    def test_resource_monitor_logs_heartbeat_payload(self) -> None:
+        payloads: list[dict] = []
+        logger = logging.getLogger("test-heartbeat")
+        monitor = ResourceMonitor(
+            config=MonitoringConfig(service_name="test-tool", instance_id="instance-1"),
+            publish=payloads.append,
+            logger=logger,
+        )
+
+        with self.assertLogs("test-heartbeat", level="INFO") as logs:
+            monitor.publish_once()
+
+        self.assertEqual(len(payloads), 1)
+        self.assertIn("resource monitor heartbeat payload=", logs.output[0])
+
     def test_resource_monitor_can_be_disabled_without_publisher(self) -> None:
         monitor = ResourceMonitor(
             config=MonitoringConfig(
@@ -115,7 +132,54 @@ class ResourceMonitoringTests(unittest.TestCase):
         self.assertFalse(monitor.running)
         self.assertEqual(payload["category"], "disabled-tool")
 
-    def test_pubsub_metrics_publisher_accepts_full_topic_path(self) -> None:
+    def test_pubsub_metrics_publisher_accepts_credentials_json(self) -> None:
+        import base64
+        import json
+
+        class FakePublisher:
+            def __init__(self, credentials=None) -> None:
+                self.credentials = credentials
+
+            def topic_path(self, project_id: str, topic: str) -> str:
+                return f"projects/{project_id}/topics/{topic}"
+
+        captured: dict = {}
+
+        def fake_client(credentials_file=None, credentials_json=None):
+            captured["credentials_json"] = credentials_json
+            captured["credentials_file"] = credentials_file
+            return FakePublisher()
+
+        raw_json = json.dumps({"project_id": "test-project", "type": "service_account"})
+        b64_json = base64.b64encode(raw_json.encode()).decode()
+
+        # Verify raw JSON is accepted
+        with unittest.mock.patch.object(
+            PubSubMetricsPublisher,
+            "_create_publisher_client",
+            staticmethod(fake_client),
+        ):
+            publisher = PubSubMetricsPublisher(
+                topic="projects/test-project/topics/test-topic",
+                credentials_json=raw_json,
+                client=FakePublisher(),
+            )
+            self.assertEqual(publisher.credentials_json, raw_json)
+
+        # Verify base64 JSON is accepted
+        with unittest.mock.patch.object(
+            PubSubMetricsPublisher,
+            "_create_publisher_client",
+            staticmethod(fake_client),
+        ):
+            publisher = PubSubMetricsPublisher(
+                topic="projects/test-project/topics/test-topic",
+                credentials_json=b64_json,
+                client=FakePublisher(),
+            )
+            self.assertEqual(publisher.credentials_json, b64_json)
+
+
         class FakeClient:
             def topic_path(self, project_id: str, topic: str) -> str:
                 return f"projects/{project_id}/topics/{topic}"
