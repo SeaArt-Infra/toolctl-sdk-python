@@ -1,93 +1,121 @@
 # toolctl-sdk-python
 
+Python SDK for registering tool service metadata and handlers.
 
+The SDK keeps tool metadata in one registry so agents and skills can discover a
+tool service without guessing:
 
-## Getting started
+- stable `server_name`
+- function name and description
+- whether the function returns `json` or `sse`
+- request parameter JSON schema
+- optional response schema
+- method, path, tags, timeout, and protocol mode
+- HTTP endpoints for `/health`, `/tools`, `/tool-manifest.json`, and `/openapi.json`
+- JSON and SSE tool responses
+- resource heartbeat monitoring for scheduler integration
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Quick start
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+```python
+from toolctl import App, AppConfig
 
-## Add your files
+app = App(AppConfig(title="Video Tools", server_name="video-tools"))
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+app.register_tool(
+    name="ping",
+    description="Return the submitted payload.",
+    request_schema={
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "description": "Message to echo"},
+        },
+        "required": ["message"],
+    },
+    handler=lambda payload: {"ok": True, "payload": payload},
+)
 
+manifest = app.tool_manifest("ping")
+print(manifest.server_name)
+print(manifest.response_mode)  # "json"
+print(manifest.is_sse)         # False
+print(manifest.request_schema)
+
+app.run("127.0.0.1", 8080)
 ```
-cd existing_repo
-git remote add origin https://github.com/seaart-infra/toolctl-sdk-python.git
-git branch -M main
-git push -uf origin main
+
+## SSE tools
+
+```python
+app.register_sse_tool(
+    name="stream_ping",
+    description="Stream progress events.",
+    request_schema={"type": "object", "properties": {}},
+    handler=lambda payload, writer: None,
+)
+
+manifest = app.tool_manifest("stream_ping")
+assert manifest.response_mode == "sse"
+assert manifest.is_sse is True
 ```
 
-## Integrate with your tools
+## Server manifest
 
-- [ ] [Set up project integrations](https://github.com/seaart-infra/toolctl-sdk-python/-/settings/integrations)
+```python
+payload = app.server_manifest()
+```
 
-## Collaborate with your team
+`payload` contains `server_name`, `title`, `version`, and a sorted `tools` list.
+Each tool item includes `description`, `request_schema`, optional
+`response_schema`, `response_mode`, `is_sse`, `method`, `path`, `tags`,
+`timeout_ms`, and `protocol_mode`.
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+Tool services should register every exposed function through this SDK. Skills and
+agents should consume the manifest rather than deriving parameters, streaming
+mode, or server identity from source code or route conventions.
 
-## Test and Deploy
+## HTTP endpoints
 
-Use the built-in continuous integration in GitLab.
+```bash
+curl http://127.0.0.1:8080/tool-manifest.json
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+curl -X POST http://127.0.0.1:8080/tools/ping \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello"}'
 
-***
+curl -N -X POST http://127.0.0.1:8080/tools/stream_ping \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
 
-# Editing this README
+## Scheduler monitoring
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+```python
+from toolctl import EnableResourceMonitoringOptions
 
-## Suggestions for a good README
+monitor = app.enable_resource_monitoring(
+    EnableResourceMonitoringOptions(
+        publish=lambda payload: print(payload),
+        publish_immediately=True,
+    )
+)
+```
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+When monitoring is enabled, the SDK reports busy while a tool request is active
+and idle otherwise. The scheduler can use this heartbeat for instance selection.
 
-## Name
-Choose a self-explaining name for your project.
+The Python SDK also exposes scheduler helper APIs aligned with the Go SDK:
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+```python
+from toolctl import (
+    PubSubMetricsPublisher,
+    PubSubMetricsPublisherOptions,
+    get_credentials_json,
+    project_id_from_credentials_json,
+)
+```
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Use `EnableResourceMonitoringOptions(publish=...)` for the actual scheduler
+publisher. `PubSubMetricsPublisher` keeps the same configuration shape as Go;
+wire its publishing implementation to your runtime's Google auth stack when
+needed.
