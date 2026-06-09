@@ -11,7 +11,7 @@ from sea_tools_server_sdk.errors import (
     UpstreamRequestError,
     UpstreamTimeoutError,
 )
-from sea_tools_server_sdk.models import AuthConfig, GatewayRegistrationResult, ToolSpec
+from sea_tools_server_sdk.models import AuthConfig, GatewayRegistrationResult, ToolManifest, ToolSpec
 from sea_tools_server_sdk.monitoring import (
     MACHINE_STATUS_BUSY,
     MACHINE_STATUS_ERROR,
@@ -89,6 +89,7 @@ __all__ = [
     "ResourceMonitor",
     "SystemMetricsCollector",
     "ToolApp",
+    "ToolManifest",
     "ToolOutput",
     "ToolResult",
     "ToolRegistrationError",

@@ -16,7 +16,7 @@ import uvicorn
 
 from sea_tools_server_sdk.errors import GatewayRegistrationError, ToolRegistrationError, ToolValidationError, UpstreamRequestError
 from sea_tools_server_sdk.gateway import build_gateway_registration_payload, register_tools_to_gateway
-from sea_tools_server_sdk.models import AuthConfig, GatewayRegistrationResult, ToolHandler, ToolSpec
+from sea_tools_server_sdk.models import AuthConfig, GatewayRegistrationResult, ToolHandler, ToolManifest, ToolSpec
 from sea_tools_server_sdk.monitoring import (
     MACHINE_STATUS_BUSY,
     MACHINE_STATUS_IDLE,
@@ -44,6 +44,7 @@ class ToolApp:
         self,
         *,
         title: str,
+        server_name: str | None = None,
         version: str = "0.1.0",
         description: str = "",
         base_path: str = "",
@@ -51,6 +52,7 @@ class ToolApp:
         openapi_url: str = "/openapi.json",
     ) -> None:
         self.title = title
+        self.server_name = server_name or title
         self.version = version
         self.description = description
         self.base_path = base_path
@@ -74,19 +76,15 @@ class ToolApp:
             return {"status": "ok"}
 
         @self.fastapi.get("/tools", tags=["system"])
-        async def list_tools() -> dict[str, list[dict[str, Any]]]:
+        async def list_tools() -> dict[str, Any]:
             return {
-                "tools": [
-                    {
-                        "name": spec.name,
-                        "method": spec.method,
-                        "path": spec.path,
-                        "description": spec.description,
-                        "tags": spec.tags,
-                    }
-                    for spec in self._tools.values()
-                ]
+                "server_name": self.server_name,
+                "tools": [manifest.to_dict() for manifest in self.tools_manifest()],
             }
+
+        @self.fastapi.get("/tool-manifest.json", tags=["system"])
+        async def tool_manifest() -> dict[str, Any]:
+            return self.server_manifest()
 
     def register_tool(
         self,
@@ -330,6 +328,39 @@ class ToolApp:
             response_mode="sse",
             protocol_mode=protocol_mode,
         )
+
+    def get_tool(self, name: str) -> ToolSpec | None:
+        """Return a registered tool by name."""
+
+        return self._tools.get(name)
+
+    def tool_manifest(self, name: str) -> ToolManifest | None:
+        """Return discovery metadata for one registered tool."""
+
+        spec = self.get_tool(name)
+        if spec is None:
+            return None
+        return spec.manifest(self.server_name)
+
+    def tools_manifest(self) -> list[ToolManifest]:
+        """Return discovery metadata for all tools, sorted by name."""
+
+        return [self._tools[name].manifest(self.server_name) for name in sorted(self._tools)]
+
+    def server_manifest(self) -> dict[str, Any]:
+        """Return discovery metadata for this tool service."""
+
+        payload: dict[str, Any] = {
+            "server_name": self.server_name,
+            "title": self.title,
+            "version": self.version,
+            "tools": [manifest.to_dict() for manifest in self.tools_manifest()],
+        }
+        if self.description:
+            payload["description"] = self.description
+        if self.base_path:
+            payload["base_path"] = self.base_path
+        return payload
 
     def sse_tool(
         self,
@@ -576,6 +607,7 @@ class ToolApp:
             description=self.description,
             routes=self.fastapi.routes,
         )
+        schema.setdefault("info", {})["x-server-name"] = self.server_name
         for spec in self._tools.values():
             path_item = schema.setdefault("paths", {}).setdefault(spec.path, {})
             operation = path_item.setdefault(spec.method.lower(), {})
@@ -729,6 +761,7 @@ class ToolApp:
 def start(
     *,
     title: str,
+    server_name: str | None = None,
     version: str = "0.1.0",
     description: str = "",
     base_path: str = "",
@@ -739,6 +772,7 @@ def start(
 
     return ToolApp(
         title=title,
+        server_name=server_name,
         version=version,
         description=description,
         base_path=base_path,

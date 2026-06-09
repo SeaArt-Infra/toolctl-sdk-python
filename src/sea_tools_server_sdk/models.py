@@ -63,3 +63,64 @@ class ToolSpec:
         if not self.upstream_base_url or not self.upstream_path:
             return None
         return urljoin(self.upstream_base_url.rstrip("/") + "/", self.upstream_path.lstrip("/"))
+
+    @property
+    def is_sse(self) -> bool:
+        """Return whether this tool uses SSE responses."""
+
+        return self.response_mode == "sse"
+
+    def manifest(self, server_name: str) -> "ToolManifest":
+        """Return the stable discovery metadata for this tool."""
+
+        return ToolManifest(
+            server_name=server_name,
+            name=self.name,
+            description=self.description,
+            request_schema=dict(self.request_schema),
+            response_schema=dict(self.response_schema) if self.response_schema is not None else None,
+            method=self.method,
+            path=self.path,
+            tags=list(self.tags),
+            timeout_ms=self.timeout_ms,
+            response_mode=self.response_mode,
+            is_sse=self.is_sse,
+            protocol_mode=self.protocol_mode,
+        )
+
+
+@dataclass(slots=True)
+class ToolManifest:
+    """Stable metadata consumed by schedulers, skills, and agents."""
+
+    server_name: str
+    name: str
+    description: str
+    request_schema: dict[str, Any]
+    method: str
+    path: str
+    timeout_ms: int
+    response_mode: str
+    is_sse: bool
+    protocol_mode: str
+    response_schema: dict[str, Any] | None = None
+    tags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "server_name": self.server_name,
+            "name": self.name,
+            "description": self.description,
+            "request_schema": dict(self.request_schema),
+            "method": self.method,
+            "path": self.path,
+            "timeout_ms": self.timeout_ms,
+            "response_mode": self.response_mode,
+            "is_sse": self.is_sse,
+            "protocol_mode": self.protocol_mode,
+        }
+        if self.response_schema is not None:
+            payload["response_schema"] = dict(self.response_schema)
+        if self.tags:
+            payload["tags"] = list(self.tags)
+        return payload

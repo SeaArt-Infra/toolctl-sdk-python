@@ -137,6 +137,38 @@ class ToolAppTests(unittest.TestCase):
         self.assertIn('"type": "tool.completed"', response.text)
         self.assertIn("data: [DONE]", response.text)
 
+    def test_tool_manifest_endpoint_includes_schema_and_response_mode(self) -> None:
+        async def ping(payload: dict) -> dict:
+            return {"echo": payload["message"]}
+
+        app = toolctl.start(title="Display Name", server_name="video-tools", version="0.1.0")
+        app.register_tool(
+            name="ping",
+            description="Ping",
+            request_schema={
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "Message to echo"},
+                },
+                "required": ["message"],
+            },
+            handler=ping,
+        )
+
+        client = TestClient(app.fastapi)
+        response = client.get("/tool-manifest.json")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["server_name"], "video-tools")
+        self.assertEqual(body["tools"][0]["name"], "ping")
+        self.assertEqual(body["tools"][0]["response_mode"], "json")
+        self.assertFalse(body["tools"][0]["is_sse"])
+        self.assertEqual(
+            body["tools"][0]["request_schema"]["properties"]["message"]["description"],
+            "Message to echo",
+        )
+
     @patch("sea_tools_server_sdk.app.stream_upstream_tool")
     def test_register_proxy_sse_tool(self, mock_stream_upstream_tool) -> None:
         async def fake_stream():

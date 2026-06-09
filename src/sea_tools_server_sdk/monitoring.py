@@ -203,6 +203,13 @@ class SystemMetricsCollector:
         )
         cpu_percent = self._system_cpu_percent()
         memory = self._memory_metrics()
+        process = {
+            "pid": os.getpid(),
+            "cpu_percent": self._process_cpu_percent(now),
+            "rss_bytes": self._process_rss_bytes(),
+            "uptime_seconds": now - self._started_at,
+            "thread_count": threading.active_count(),
+        }
         payload: dict[str, Any] = {
             "id": machine_id,
             "ip": ip,
@@ -223,10 +230,17 @@ class SystemMetricsCollector:
             "cloud": self._label("cloud"),
             "host_id": self._label("host_id"),
             "partition": self._label("partition"),
+            "cpu": {
+                "percent": cpu_percent,
+                "load_average": self._load_average(),
+            },
+            "memory": memory,
+            "process": process,
             "cpu_percent": cpu_percent,
             "memory_percent": memory.get("used_percent") if memory else None,
             "instance_id": self.instance_id,
             "hostname": socket.gethostname(),
+            "labels": dict(self.labels),
         }
         return payload
 

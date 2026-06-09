@@ -15,6 +15,7 @@ Features:
 - `register_tool_from_openapi()` for OpenAPI / Swagger-backed tools
 - `register_to_gateway()` to submit current tools to agent-gateway
 - built-in `/health`, `/tools`, `/openapi.json`, and `/docs`
+- built-in `/tool-manifest.json` for scheduler/skill/agent discovery
 - gateway registration payload export
 - proxy auth, retry, and TLS controls
 - optional SSE response mode for local and proxy tools
@@ -48,6 +49,44 @@ async def ping(payload: dict) -> dict:
 
 app.run(host="127.0.0.1", port=8080)
 ```
+
+## Tool manifest
+
+Every tool registered through the SDK is automatically added to the app
+registry. Schedulers, skills, and agents should read this registry instead of
+inferring tool behavior from OpenAPI, route names, or handwritten skill docs.
+
+Configure a stable server name:
+
+```python
+app = toolctl.start(
+    title="Video Tools",
+    server_name="video-tools",
+    version="0.1.0",
+)
+```
+
+Read the manifest in process:
+
+```python
+manifest = app.tool_manifest("ping")
+if manifest:
+    print(manifest.server_name)
+    print(manifest.response_mode)  # "json" or "sse"
+    print(manifest.is_sse)
+    print(manifest.request_schema)
+```
+
+Or over HTTP:
+
+```bash
+curl http://127.0.0.1:8080/tool-manifest.json
+```
+
+The payload includes `server_name`, tool `description`, `request_schema`,
+optional `response_schema`, `response_mode`, `is_sse`, `method`, `path`, tags,
+timeout, and protocol mode. `/tools` returns the same per-tool metadata with
+`server_name` for lightweight discovery.
 
 If you prefer a direct constructor:
 
