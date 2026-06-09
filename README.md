@@ -1,121 +1,253 @@
-# toolctl-sdk-python
+# toolctl-sdk
 
-Python SDK for registering tool service metadata and handlers.
+`toolctl-sdk` is a server-side SDK for plain HTTP tool services.
 
-The SDK keeps tool metadata in one registry so agents and skills can discover a
-tool service without guessing:
+It is designed for tool providers, not tool callers.
 
-- stable `server_name`
-- function name and description
-- whether the function returns `json` or `sse`
-- request parameter JSON schema
-- optional response schema
-- method, path, tags, timeout, and protocol mode
-- HTTP endpoints for `/health`, `/tools`, `/tool-manifest.json`, and `/openapi.json`
-- JSON and SSE tool responses
-- resource heartbeat monitoring for scheduler integration
+Features:
+
+- `toolctl.start()` to create a tool app quickly
+- `create_app()` as a direct top-level constructor
+- protocol-first JSON and SSE responses
+- `register_tool()` for code-first tools
+- `register_sse_tool()` for code-first SSE tools
+- `register_proxy_tool()` for existing upstream HTTP APIs
+- `register_tool_from_openapi()` for OpenAPI / Swagger-backed tools
+- `register_to_gateway()` to submit current tools to agent-gateway
+- built-in `/health`, `/tools`, `/openapi.json`, and `/docs`
+- built-in `/tool-manifest.json` for scheduler/skill/agent discovery
+- gateway registration payload export
+- proxy auth, retry, and TLS controls
+- optional SSE response mode for local and proxy tools
+
+## Install
+
+```bash
+pip install -e .
+```
 
 ## Quick start
 
 ```python
-from toolctl import App, AppConfig
+from sea_tools_server_sdk import toolctl
 
-app = App(AppConfig(title="Video Tools", server_name="video-tools"))
+app = toolctl.start(title="video-tools", version="0.1.0")
 
-app.register_tool(
+@app.tool(
     name="ping",
     description="Return the submitted payload.",
     request_schema={
         "type": "object",
         "properties": {
-            "message": {"type": "string", "description": "Message to echo"},
+            "message": {"type": "string"},
         },
         "required": ["message"],
     },
-    handler=lambda payload: {"ok": True, "payload": payload},
 )
+async def ping(payload: dict) -> dict:
+    return {"ok": True, "payload": payload}
 
+app.run(host="127.0.0.1", port=8080)
+```
+
+## Tool manifest
+
+Every tool registered through the SDK is automatically added to the app
+registry. Schedulers, skills, and agents should read this registry instead of
+inferring tool behavior from OpenAPI, route names, or handwritten skill docs.
+
+Configure a stable server name:
+
+```python
+app = toolctl.start(
+    title="Video Tools",
+    server_name="video-tools",
+    version="0.1.0",
+)
+```
+
+Read the manifest in process:
+
+```python
 manifest = app.tool_manifest("ping")
-print(manifest.server_name)
-print(manifest.response_mode)  # "json"
-print(manifest.is_sse)         # False
-print(manifest.request_schema)
-
-app.run("127.0.0.1", 8080)
+if manifest:
+    print(manifest.server_name)
+    print(manifest.response_mode)  # "json" or "sse"
+    print(manifest.is_sse)
+    print(manifest.request_schema)
 ```
 
-## SSE tools
-
-```python
-app.register_sse_tool(
-    name="stream_ping",
-    description="Stream progress events.",
-    request_schema={"type": "object", "properties": {}},
-    handler=lambda payload, writer: None,
-)
-
-manifest = app.tool_manifest("stream_ping")
-assert manifest.response_mode == "sse"
-assert manifest.is_sse is True
-```
-
-## Server manifest
-
-```python
-payload = app.server_manifest()
-```
-
-`payload` contains `server_name`, `title`, `version`, and a sorted `tools` list.
-Each tool item includes `description`, `request_schema`, optional
-`response_schema`, `response_mode`, `is_sse`, `method`, `path`, `tags`,
-`timeout_ms`, and `protocol_mode`.
-
-Tool services should register every exposed function through this SDK. Skills and
-agents should consume the manifest rather than deriving parameters, streaming
-mode, or server identity from source code or route conventions.
-
-## HTTP endpoints
+Or over HTTP:
 
 ```bash
 curl http://127.0.0.1:8080/tool-manifest.json
+```
 
-curl -X POST http://127.0.0.1:8080/tools/ping \
-  -H 'Content-Type: application/json' \
+The payload includes `server_name`, tool `description`, `request_schema`,
+optional `response_schema`, `response_mode`, `is_sse`, `method`, `path`, tags,
+timeout, and protocol mode. `/tools` returns the same per-tool metadata with
+`server_name` for lightweight discovery.
+
+If you prefer a direct constructor:
+
+```python
+from sea_tools_server_sdk import create_app
+
+app = create_app(title="video-tools", version="0.1.0")
+```
+
+Then call:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/tools/ping" \
+  -H "Content-Type: application/json" \
   -d '{"message":"hello"}'
-
-curl -N -X POST http://127.0.0.1:8080/tools/stream_ping \
-  -H 'Content-Type: application/json' \
-  -d '{}'
 ```
 
-## Scheduler monitoring
+Response:
+
+```json
+{
+  "type": "tool.completed",
+  "tool": {
+    "id": "task_xxx",
+    "name": "ping",
+    "status": "completed",
+    "outputs": [],
+    "metadata": {
+      "result": {
+        "ok": true,
+        "payload": {
+          "message": "hello"
+        }
+      }
+    }
+  }
+}
+```
+
+For richer output items, return `ToolResult`:
 
 ```python
-from toolctl import EnableResourceMonitoringOptions
+from sea_tools_server_sdk import ToolResult, file_output
 
-monitor = app.enable_resource_monitoring(
-    EnableResourceMonitoringOptions(
-        publish=lambda payload: print(payload),
-        publish_immediately=True,
+
+@app.tool(
+    name="compose_video",
+    description="Compose a video.",
+    request_schema={"type": "object", "properties": {}},
+)
+async def compose_video(_payload: dict) -> ToolResult:
+    return ToolResult(
+        outputs=[
+            file_output(
+                "video",
+                "https://cdn.example.com/output.mp4",
+                content_type="video/mp4",
+                duration_ms=30000,
+            )
+        ],
+        usage={"duration_ms": 6358},
+        metadata={"provider": "ffmpeg"},
     )
-)
 ```
 
-When monitoring is enabled, the SDK reports busy while a tool request is active
-and idle otherwise. The scheduler can use this heartbeat for instance selection.
+If `usage.cost` is omitted, the SDK defaults it to `0`.
 
-The Python SDK also exposes scheduler helper APIs aligned with the Go SDK:
+## SSE tool
 
 ```python
-from toolctl import (
-    PubSubMetricsPublisher,
-    PubSubMetricsPublisherOptions,
-    get_credentials_json,
-    project_id_from_credentials_json,
+from sea_tools_server_sdk import completed, in_progress
+
+
+@app.sse_tool(
+    name="stream_ping",
+    description="Stream progress events.",
+    request_schema={
+        "type": "object",
+        "properties": {"message": {"type": "string"}},
+        "required": ["message"],
+    },
+)
+async def stream_ping(payload: dict):
+    async def generator():
+        yield in_progress(
+            tool_name="stream_ping",
+            task_id="task_stream_ping",
+            progress=50,
+            message=payload["message"],
+        )
+        yield completed(
+            tool_name="stream_ping",
+            task_id="task_stream_ping",
+            outputs=[],
+            metadata={"result": "ok"},
+        )
+    return generator()
+```
+
+SSE streams are emitted with protocol events and end with `data: [DONE]`.
+
+## Compatibility mode
+
+Default behavior is `protocol_mode="strict"`.
+
+If you still need raw legacy JSON temporarily:
+
+```python
+@app.tool(
+    name="legacy_ping",
+    description="Legacy behavior",
+    request_schema={"type": "object", "properties": {}},
+    protocol_mode="passthrough",
+)
+async def legacy_ping(_payload: dict) -> dict:
+    return {"ok": True}
+```
+
+## Examples
+
+- `examples/basic_app.py`
+- `examples/proxy_app.py`
+- `docs/quick-tool-integration.md`
+- `docs/tool-response-protocol.md`
+
+## Register to gateway
+
+```python
+results = app.register_to_gateway(
+    gateway_url="https://gateway.example.com/v1/tools/register",
+    provider="video-tools",
+    base_url="https://video.example.com",
+    verify_tls=False,
 )
 ```
 
-Use `EnableResourceMonitoringOptions(publish=...)` for the actual scheduler
-publisher. `PubSubMetricsPublisher` keeps the same configuration shape as Go;
-wire its publishing implementation to your runtime's Google auth stack when
-needed.
+## Resource monitoring
+
+`toolctl-sdk` includes resource monitoring for tool services. The SDK publishes comfy-agent style heartbeats with the same top-level scheduling fields (`id`, `ip`, `routes`, `send_time`, `machine_id`, `status`, `category`, `task_url`, `instance_group`, `express`, `task_express_url`, `cloud`, `host_id`, `partition`). CPU, memory, process RSS, process CPU, uptime, load average, and host metadata are appended to that payload. The default interval is 5 seconds.
+
+The SDK does not own topics or messaging configuration. Tools can pass their own publisher, or use the SDK Pub/Sub publisher with config values loaded by the tool:
+
+```python
+from sea_tools_server_sdk import PubSubMetricsPublisher, start_resource_monitor
+
+publisher = PubSubMetricsPublisher(
+    topic="projects/PROJECT_ID/topics/TOPIC_NAME",
+    credentials_file="./configs/service-account.json",
+)
+
+monitor = start_resource_monitor(
+    service_name="web-tool",
+    publisher=publisher,
+    enabled=True,
+    interval_seconds=5,
+    labels={"tool": "web-tool", "port": "8080", "api": "tools"},
+)
+```
+
+Set `enabled=False` to keep resource monitoring configured but inactive. Disabled monitors do not start the heartbeat thread, publish metrics, or require a publisher.
+
+`PubSubMetricsPublisher` accepts full Pub/Sub topic paths. If a tool passes a short topic name instead, it must also pass `project_id`.
+
+For `ToolApp` instances, `enable_resource_monitoring(...)` attaches start/stop to the FastAPI lifecycle.
