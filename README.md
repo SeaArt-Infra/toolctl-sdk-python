@@ -1,35 +1,35 @@
 # toolctl-sdk
 
-`toolctl-sdk` 是面向工具服务提供方的 Python 服务端 SDK。它用于将 Python 函数、已有 HTTP API 或 OpenAPI 服务封装为标准化工具服务，并提供工具注册、协议化响应、工具清单、SSE 流式输出和资源监控等能力。
+`toolctl-sdk` is a Python server SDK for tool-service providers. It wraps Python functions, existing HTTP APIs, and OpenAPI services as standardized tool services with tool registration, protocol responses, tool manifests, SSE streaming, and resource monitoring.
 
-## 特性
+## Features
 
-- **快速构建工具服务**：通过 `toolctl.start()` 或 `create_app()` 创建服务应用。
-- **代码优先注册工具**：通过 `@app.tool()` 注册普通工具，通过 `@app.sse_tool()` 注册流式工具。
-- **协议化响应**：默认输出标准 tool protocol 响应，支持 JSON 和 SSE 两种模式。
-- **代理与导入能力**：支持代理已有 HTTP API，并支持从 OpenAPI / Swagger 注册工具。
-- **服务发现**：内置 `/tools` 和 `/tool-manifest.json`，用于工具元数据发现。
-- **运行状态检查**：内置 `/health`、`/openapi.json`、`/docs` 等基础路由。
-- **资源监控**：支持定时采集并上报服务心跳、CPU、内存、进程等运行指标。
-- **证书加载**：支持通过本地文件路径读取 GCP service account credentials JSON。
+- **Quick service setup**: Create an application with `toolctl.start()` or `create_app()`.
+- **Code-first tool registration**: Register standard tools with `@app.tool()` and streaming tools with `@app.sse_tool()`.
+- **Protocol responses**: Return standard tool protocol responses in JSON or SSE mode by default.
+- **Proxy and import support**: Proxy existing HTTP APIs or register tools from OpenAPI and Swagger definitions.
+- **Service discovery**: Expose built-in `/tools` and `/tool-manifest.json` metadata endpoints.
+- **Runtime checks**: Include `/health`, `/openapi.json`, `/docs`, and other base routes.
+- **Resource monitoring**: Periodically collect and publish service heartbeat, CPU, memory, and process metrics.
+- **Credential loading**: Read GCP service-account credential JSON from a local file path.
 
-## 安装
+## Installation
 
-开发模式安装：
+Install in development mode:
 
 ```bash
 pip install -e .
 ```
 
-如需使用 Google Pub/Sub 资源监控发布器，请安装 `pubsub` 可选依赖：
+Install the `pubsub` extra to use the Google Pub/Sub resource-monitoring publisher:
 
 ```bash
 pip install -e '.[pubsub]'
 ```
 
-## 快速开始
+## Quick Start
 
-以下示例创建一个最小工具服务，并注册一个 `ping` 工具：
+The following example creates a minimal tool service and registers a `ping` tool:
 
 ```python
 from sea_tools_server_sdk import toolctl
@@ -39,7 +39,7 @@ app = toolctl.start(title="video-tools", version="0.1.0")
 
 @app.tool(
     name="ping",
-    description="返回提交的 payload。",
+    description="Return the submitted payload.",
     request_schema={
         "type": "object",
         "properties": {
@@ -55,7 +55,7 @@ async def ping(payload: dict) -> dict:
 app.run(host="127.0.0.1", port=8080)
 ```
 
-调用工具：
+Call the tool:
 
 ```bash
 curl -X POST "http://127.0.0.1:8080/tools/ping" \
@@ -63,7 +63,7 @@ curl -X POST "http://127.0.0.1:8080/tools/ping" \
   -d '{"message":"hello"}'
 ```
 
-响应示例：
+Example response:
 
 ```json
 {
@@ -85,7 +85,7 @@ curl -X POST "http://127.0.0.1:8080/tools/ping" \
 }
 ```
 
-也可以使用顶层构造函数创建应用：
+Alternatively, create an application with the top-level constructor:
 
 ```python
 from sea_tools_server_sdk import create_app
@@ -93,16 +93,16 @@ from sea_tools_server_sdk import create_app
 app = create_app(title="video-tools", version="0.1.0")
 ```
 
-## 工具注册
+## Tool Registration
 
-### 普通工具
+### Standard Tools
 
-普通工具使用 `@app.tool()` 注册。建议使用 JSON Schema 描述请求参数，便于调用方、调度器或工具发现系统理解工具能力。
+Register standard tools with `@app.tool()`. Use JSON Schema to describe request parameters so callers, schedulers, and discovery systems can understand the tool contract.
 
 ```python
 @app.tool(
     name="add",
-    description="计算两个数字之和。",
+    description="Add two numbers.",
     request_schema={
         "type": "object",
         "properties": {
@@ -116,11 +116,11 @@ async def add(payload: dict) -> dict:
     return {"result": payload["a"] + payload["b"]}
 ```
 
-默认情况下，SDK 会将函数返回值包装为标准 tool protocol 响应。
+By default, the SDK wraps the function return value in a standard tool protocol response.
 
-### 富媒体输出
+### Rich Media Output
 
-当工具需要返回图片、视频、文件等结构化结果时，可以返回 `ToolResult`。
+Return `ToolResult` when a tool produces structured outputs such as images, videos, or files.
 
 ```python
 from sea_tools_server_sdk import ToolResult, file_output
@@ -128,7 +128,7 @@ from sea_tools_server_sdk import ToolResult, file_output
 
 @app.tool(
     name="compose_video",
-    description="合成视频。",
+    description="Compose a video.",
     request_schema={"type": "object", "properties": {}},
 )
 async def compose_video(_payload: dict) -> ToolResult:
@@ -146,11 +146,11 @@ async def compose_video(_payload: dict) -> ToolResult:
     )
 ```
 
-如果没有显式提供 `usage.cost`，SDK 会默认设置为 `0`。
+The SDK sets `usage.cost` to `0` when it is not provided explicitly.
 
-### SSE 流式工具
+### SSE Streaming Tools
 
-SSE 工具适用于需要持续返回进度、日志或分阶段结果的任务。
+Use SSE tools for tasks that continuously return progress, logs, or intermediate results.
 
 ```python
 from sea_tools_server_sdk import completed, in_progress
@@ -158,7 +158,7 @@ from sea_tools_server_sdk import completed, in_progress
 
 @app.sse_tool(
     name="stream_ping",
-    description="流式返回执行进度。",
+    description="Stream execution progress.",
     request_schema={
         "type": "object",
         "properties": {"message": {"type": "string"}},
@@ -183,13 +183,13 @@ async def stream_ping(payload: dict):
     return generator()
 ```
 
-SSE 响应会按协议输出事件，并以 `data: [DONE]` 结束。
+SSE responses emit protocol events and terminate with `data: [DONE]`.
 
-## 工具清单
+## Tool Manifest
 
-SDK 会为已注册工具维护应用内工具清单。工具发现系统应优先读取该清单，而不是依赖 OpenAPI 路由或手写文档推断工具能力。
+The SDK maintains an in-process manifest for registered tools. Tool discovery systems should read this manifest instead of inferring capabilities from OpenAPI routes or handwritten documentation.
 
-建议为服务配置稳定的 `server_name`：
+Configure a stable `server_name` for the service:
 
 ```python
 app = toolctl.start(
@@ -199,35 +199,35 @@ app = toolctl.start(
 )
 ```
 
-进程内读取工具清单：
+Read a tool manifest in process:
 
 ```python
 manifest = app.tool_manifest("ping")
 if manifest:
     print(manifest.server_name)
-    print(manifest.response_mode)  # "json" 或 "sse"
+    print(manifest.response_mode)  # "json" or "sse"
     print(manifest.is_sse)
     print(manifest.request_schema)
 ```
 
-通过 HTTP 读取工具清单：
+Read the tool manifest over HTTP:
 
 ```bash
 curl http://127.0.0.1:8080/tool-manifest.json
 ```
 
-`/tool-manifest.json` 包含 `server_name`、工具描述、`request_schema`、可选的 `response_schema`、`response_mode`、`is_sse`、HTTP method、path、tags、timeout 和协议模式等信息。`/tools` 提供更轻量的工具元数据列表。
+`/tool-manifest.json` includes `server_name`, tool descriptions, `request_schema`, optional `response_schema`, `response_mode`, `is_sse`, HTTP method, path, tags, timeout, and protocol mode. `/tools` provides a lighter-weight list of tool metadata.
 
-## 协议模式
+## Protocol Mode
 
-默认协议模式为 `strict`，SDK 会返回标准 tool protocol 响应。
+The default protocol mode is `strict`, which returns standard tool protocol responses.
 
-如需临时兼容旧版原始 JSON 返回，可以为单个工具设置 `protocol_mode="passthrough"`：
+For temporary compatibility with legacy raw JSON responses, set `protocol_mode="passthrough"` on an individual tool:
 
 ```python
 @app.tool(
     name="legacy_ping",
-    description="旧版返回格式。",
+    description="Legacy response format.",
     request_schema={"type": "object", "properties": {}},
     protocol_mode="passthrough",
 )
@@ -235,15 +235,15 @@ async def legacy_ping(_payload: dict) -> dict:
     return {"ok": True}
 ```
 
-## 资源监控
+## Resource Monitoring
 
-SDK 内置资源监控能力，可定时采集并发布服务心跳。默认采集间隔为 5 秒。
+The SDK includes resource monitoring that periodically collects and publishes a service heartbeat. The default collection interval is five seconds.
 
-心跳数据包含 `id`、`ip`、`routes`、`send_time`、`machine_id`、`status`、`category`、`task_url`、`instance_group`、`express`、`task_express_url`、`cloud`、`host_id`、`partition` 等调度相关字段，并附加 CPU、内存、进程 RSS、进程 CPU、uptime、load average 和主机元数据。
+Heartbeat data includes scheduler-oriented fields such as `id`, `ip`, `routes`, `send_time`, `machine_id`, `status`, `category`, `task_url`, `instance_group`, `express`, `task_express_url`, `cloud`, `host_id`, and `partition`, as well as CPU, memory, process RSS, process CPU, uptime, load average, and host metadata.
 
-### 自定义 publisher
+### Custom Publisher
 
-如果业务方已有消息发布实现，可以传入自定义 publisher。publisher 需要实现 `publish(data, attributes=None, ordering_key=None)` 方法。
+Pass a custom publisher when the service already has a message-publishing implementation. The publisher must implement `publish(data, attributes=None, ordering_key=None)`.
 
 ```python
 from sea_tools_server_sdk import start_resource_monitor
@@ -269,9 +269,9 @@ monitor = start_resource_monitor(
 )
 ```
 
-### Google Pub/Sub publisher
+### Google Pub/Sub Publisher
 
-SDK 提供 `PubSubMetricsPublisher`，可将资源监控数据发布到 Google Pub/Sub。
+Use `PubSubMetricsPublisher` to publish resource-monitoring data to Google Pub/Sub.
 
 ```python
 from sea_tools_server_sdk import PubSubMetricsPublisher, start_resource_monitor
@@ -290,13 +290,13 @@ monitor = start_resource_monitor(
 )
 ```
 
-`topic` 可以传完整 Pub/Sub topic path：
+Pass a complete Pub/Sub topic path as `topic`:
 
 ```text
 projects/PROJECT_ID/topics/TOPIC_NAME
 ```
 
-如果只传短 topic 名称，需要同时传入 `project_id`：
+When passing a short topic name, also provide `project_id`:
 
 ```python
 publisher = PubSubMetricsPublisher(
@@ -306,9 +306,9 @@ publisher = PubSubMetricsPublisher(
 )
 ```
 
-### 绑定 ToolApp 生命周期
+### Bind To The ToolApp Lifecycle
 
-对于 `ToolApp`，推荐使用 `enable_resource_monitoring(...)`，SDK 会自动在 FastAPI startup / shutdown 阶段启动和停止监控。
+For `ToolApp`, use `enable_resource_monitoring(...)` to start and stop monitoring automatically during FastAPI startup and shutdown.
 
 ```python
 publisher = PubSubMetricsPublisher(
@@ -325,19 +325,19 @@ app.enable_resource_monitoring(
 )
 ```
 
-设置 `enabled=False` 时，监控配置会被保留，但不会启动心跳线程，也不会发布指标。
+With `enabled=False`, the monitoring configuration is retained, but the heartbeat thread does not start and no metrics are published.
 
-## 证书文件加载
+## Credential File Loading
 
-SDK 提供 `get_credentials_json(...)` 用于从本地路径读取 GCP service account credentials JSON。
+Use `get_credentials_json(...)` to read GCP service-account credential JSON from a local path.
 
-示例路径：
+Example path:
 
 ```text
 /app/gcp/service-account.json
 ```
 
-基础用法：
+Basic usage:
 
 ```python
 from sea_tools_server_sdk.vault import get_credentials_json, project_id_from_credentials_json
@@ -346,14 +346,14 @@ credentials_json = get_credentials_json("/app/gcp/service-account.json")
 project_id = project_id_from_credentials_json(credentials_json)
 ```
 
-`get_credentials_json(...)` 行为说明：
+`get_credentials_json(...)` behavior:
 
-- `key_path` 为本地证书文件路径。
-- 文件内容支持 raw JSON 或 base64 编码后的 JSON。
-- 返回值为 base64 编码后的 JSON 字符串。
-- 证书文件不存在或内容格式非法时，会抛出 `VaultError`。
+- `key_path` is the path to a local credential file.
+- File content may be raw JSON or base64-encoded JSON.
+- The return value is a base64-encoded JSON string.
+- A missing credential file or invalid content raises `VaultError`.
 
-与 `PubSubMetricsPublisher` 结合使用：
+Use it with `PubSubMetricsPublisher`:
 
 ```python
 from sea_tools_server_sdk import PubSubMetricsPublisher
@@ -369,22 +369,22 @@ publisher = PubSubMetricsPublisher(
 )
 ```
 
-## 项目示例
+## Project Examples
 
 - `examples/basic_app.py`
 - `examples/proxy_app.py`
 - `docs/quick-tool-integration.md`
 - `docs/tool-response-protocol.md`
 
-## 测试
+## Tests
 
-运行全部测试：
+Run the complete test suite:
 
 ```bash
 uv run pytest
 ```
 
-运行资源监控和证书路径相关测试：
+Run resource-monitoring and credential-path tests:
 
 ```bash
 uv run pytest tests/test_monitoring.py tests/test_vault.py
