@@ -1,0 +1,4 @@
+interface:
+  display_name: "Toolctl Python SDK"
+  short_description: "Build Python HTTP tool services."
+  default_prompt: "Use $toolctl-sdk-python to build or extend a Python tool service with toolctl-sdk."
