@@ -21,6 +21,12 @@ Install in development mode:
 pip install -e .
 ```
 
+Install the current GitHub `main` revision in another service environment:
+
+```bash
+pip install "git+https://github.com/SeaArt-Infra/toolctl-sdk-python.git@main"
+```
+
 Install the `pubsub` extra to use the Google Pub/Sub resource-monitoring publisher:
 
 ```bash
@@ -396,7 +402,7 @@ uv run pytest tests/test_monitoring.py tests/test_vault.py
   data-doc-skill-id="toolctl-sdk-python"
   data-doc-skill-label="Toolctl Python SDK"
   data-doc-skill-filename="toolctl-sdk-python-SKILL.md"
-  data-doc-skill-version="1"
+  data-doc-skill-version="2"
 >
 ---
 name: toolctl-sdk-python
@@ -407,9 +413,17 @@ description: Build and extend Python HTTP tool services with toolctl-sdk. Use wh
 
 Use `toolctl-sdk` to expose Python handlers and upstream HTTP APIs as standard tool services. Keep handlers asynchronous and provide a JSON Schema request body for every tool.
 
+## Install
+
+Install the current GitHub `main` revision in the service environment:
+
+```bash
+pip install "git+https://github.com/SeaArt-Infra/toolctl-sdk-python.git@main"
+```
+
 ## Create A Tool Service
 
-Install the package in the service environment, then create the application with a stable `server_name` when it differs from the display title.
+Create the application with a stable `server_name` when it differs from the display title.
 
 ```python
 from sea_tools_server_sdk import toolctl
