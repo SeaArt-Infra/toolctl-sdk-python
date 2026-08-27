@@ -340,7 +340,7 @@ Use `get_credentials_json(...)` to read GCP service-account credential JSON from
 Example path:
 
 ```text
-/app/gcp/service-account.json
+/path/to/service-account.json
 ```
 
 Basic usage:
@@ -348,7 +348,7 @@ Basic usage:
 ```python
 from sea_tools_server_sdk.vault import get_credentials_json, project_id_from_credentials_json
 
-credentials_json = get_credentials_json("/app/gcp/service-account.json")
+credentials_json = get_credentials_json("/path/to/service-account.json")
 project_id = project_id_from_credentials_json(credentials_json)
 ```
 
@@ -365,7 +365,7 @@ Use it with `PubSubMetricsPublisher`:
 from sea_tools_server_sdk import PubSubMetricsPublisher
 from sea_tools_server_sdk.vault import get_credentials_json, project_id_from_credentials_json
 
-credentials_json = get_credentials_json("/app/gcp/service-account.json")
+credentials_json = get_credentials_json("/path/to/service-account.json")
 project_id = project_id_from_credentials_json(credentials_json)
 
 publisher = PubSubMetricsPublisher(
